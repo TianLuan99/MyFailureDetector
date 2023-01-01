@@ -4,20 +4,12 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 constexpr std::chrono::milliseconds MAX_RESPONSE_TIME(1000);
-
-enum Status
-{
-    ALIVE,
-    SUSPECTED
-};
-
-struct ProcessStatus
-{
-    Status alive;
-    std::chrono::steady_clock::time_point last_heard;
-};
+const int MAX_TIMEOUT_COUNT = 3;
 
 class FailureDetector
 {
@@ -26,8 +18,8 @@ public:
     {
         for (auto process : processes)
         {
-            // initialize ll processes as alive at first
-            statuses_[process] = {ALIVE, std::chrono::steady_clock::now()};
+            // initialize all processes count as 0 at first to indicate it is alive
+            statuses_[process] = 0;
         }
     }
 
@@ -36,32 +28,23 @@ public:
     {
         std::cout << "Join process " << process << std::endl;
         mark_process_alive_(process);
-        std::thread t([=]
-                      { 
+
+        std::thread check_t([=]
+                            { 
                 std::cout << "Start heartbeat for process " << process << std::endl;
                 while (true) {
                     // sleep a period and then do heartbeat
                     std::this_thread::sleep_for(MAX_RESPONSE_TIME);
-                    if (heartbeat_(process)) {
-                        // target process is still alive
-                        if (this -> statuses_[process].alive == SUSPECTED) {
-                            // if suspect this process, mark it as alive
-                            this -> mark_process_alive_(process);
-                        }
-                    } else {
-                        // target process maybe dead
-                        if (this -> statuses_[process].alive == ALIVE) {
-                            // suspect this process if its status is alive
-                            this -> mark_process_suspected_(process);
-                        } else {
-                            // mark this process as dead if we have suspected this process
-                            this -> mark_process_dead_(process);
-                            // TODO: do something if need when detect a process has become dead
-                            return;
-                        }
+                    this -> statuses_[process]++;
+                    if (this -> statuses_[process] == MAX_TIMEOUT_COUNT) {
+                        // target process is dead
+                        this -> mark_process_dead_(process);
+                        // TODO: do something if need when detect a process has become dead
+                        std::cout << "Process " << process << " dead!" << std::endl;
+                        return;
                     }
                 } });
-        t.detach();
+        check_t.detach();
     }
 
     void leave_process(std::string process)
@@ -80,22 +63,14 @@ public:
     }
 
 private:
-    std::map<std::string, ProcessStatus> statuses_;
+    std::map<std::string, int> statuses_;
     std::mutex mutex_;
 
     // mark a process as alive
     void mark_process_alive_(std::string process)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        statuses_[process].alive = ALIVE;
-        statuses_[process].last_heard = std::chrono::steady_clock::now();
-    }
-
-    // mark a process as suspected
-    void mark_process_suspected_(std::string process)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        statuses_[process].alive = SUSPECTED;
+        statuses_[process] = 0;
     }
 
     // handle failed process
@@ -106,18 +81,45 @@ private:
             // TODO: log this fail message
             std::cout << "Delete failed process failed" << std::endl;
     }
+};
 
-    bool heartbeat_(std::string process)
+void listen(int port)
+{
+    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0)
     {
-        // TODO: complete heartbeat part
-        // std::cout << "Send heartbeat to process " << process << std::endl;
-        return true;
+        std::cout << "Error when creating socket." << std::endl;
+        return;
+    }
+
+    sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = port;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    if (bind(sockfd, (sockaddr *)&addr, sizeof(addr) < 0) < 0)
+    {
+        std::cout << "Error binding socket." << std::endl;
+        return;
+    }
+
+    sockaddr_in sender_addr;
+    socklen_t sender_addr_len = sizeof(sender_addr);
+    char buffer[1024];
+
+    while (true)
+    {
+        int bytes_received = recvfrom(sockfd, buffer, sizeof(buffer), 0, (sockaddr *)&sender_addr, &sender_addr_len);
+        if (bytes_received < 0)
+        {
+            std::cout << "Error receiveing message." << std::endl;
+            return;
+        }
     }
 };
 
 int main()
 {
-    std::set<std::string> processes = {"first_process", "second_process", "third_process"};
+    std::set<std::string> processes = {"127.0.0.1", "127.0.0.2", "127.0.0.3"};
     FailureDetector detector({});
 
     for (auto process : processes)
@@ -136,7 +138,7 @@ int main()
         if (num == 5)
         {
             std::cout << "10 seconds passed, let me kill the first process" << std::endl;
-            detector.leave_process("first_process");
+            detector.leave_process("127.0.0.1");
             std::cout << "Now we have:" << std::endl;
             detector.get_alive_process();
         }
