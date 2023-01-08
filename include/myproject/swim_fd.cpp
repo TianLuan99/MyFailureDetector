@@ -3,6 +3,7 @@
 const unsigned int PORT = 12345;
 const unsigned int PING_REQ_PORT = 12346;
 const unsigned int PING_REQ_ACK_PORT = 12347;
+const unsigned int FAIL_PORT = 12348;
 
 SWIM::SWIM(std::string id, int num_processes, std::vector<std::string> processes)
     : id_(id),
@@ -102,7 +103,24 @@ void SWIM::fail(std::string process)
 {
     std::lock_guard<std::mutex> lock(mu_);
     --num_processes_;
-    // TODO: remove failed process and broadcast this fail msg
+    for (auto it = processes_.begin(); it != processes_.end(); ++it) 
+    {
+        if (*it == id_)
+            continue;
+            
+        if (*it == process)
+        {
+            processes_.erase(it);
+            break;
+        }
+        else
+        {
+            UdpWrapper failWrapper(*it, FAIL_PORT);
+            Msg failMsg = {FAIL, id_, process};
+            failWrapper.send(convert_message_(failMsg));
+        }
+    }
+    return;
 }
 
 void SWIM::listen()

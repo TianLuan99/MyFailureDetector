@@ -25,7 +25,8 @@ enum Type
 {
     PING,
     ACK,
-    PING_REQ
+    PING_REQ,
+    FAIL
 };
 
 struct Msg
